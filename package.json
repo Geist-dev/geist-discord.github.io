@@ -1,12 +1,21 @@
 {
-  "name": "clifyy-portfolio",
+  "name": "geist-discord-portfolio",
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js"
+    "start": "node --env-file-if-exists=.env server.js",
+    "dev": "node --env-file-if-exists=.env --watch server.js",
+    "test": "node --test",
+    "check": "node --check server.js && node --check presence.js && node --check app.js"
   },
   "dependencies": {
     "express": "^4.19.2"
-  }
+  },
+  "version": "1.1.0",
+  "description": "Developer portfolio with a Discord-inspired interface",
+  "engines": {
+    "node": "^22.9.0 || ^24.0.0"
+  },
+  "license": "MIT",
+  "author": "Geist-dev"
 }

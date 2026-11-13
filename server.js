@@ -1,62 +1,44 @@
-import express from "express";
-import path from "path";
-import { fileURLToPath } from "url";
-import fs from "fs/promises";
+import express from 'express';
+import { createPresence, readDiscordId } from './presence.js';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const app = express();
-const PORT = process.env.PORT || 3000;
-
-app.disable("x-powered-by");
-
-// Раздача статики (index.html и всё рядом)
-app.use(express.static(__dirname, { extensions: ["html"] }));
-
-async function getDiscordId() {
-  // 1) config.json
-  try {
-    const raw = await fs.readFile(path.join(__dirname, "config.json"), "utf-8");
-    const j = JSON.parse(raw);
-    if (j?.discord_id) return String(j.discord_id).trim();
-  } catch {}
-
-  // 2) fallback: попробуем вытащить из index.html (если там есть DISCORD_ID = "...")
-  try {
-    const html = await fs.readFile(path.join(__dirname, "index.html"), "utf-8");
-    const m = html.match(/discordIdForSpotify:\s*["'](\d+)["']/) || html.match(/DISCORD_ID\s*=\s*["'](\d+)["']/);
-    if (m) return m[1];
-  } catch {}
-
-  return null;
+const root = path.dirname(fileURLToPath(import.meta.url));
+export function createApp(options = {}) {
+  const presence = createPresence(options);
+  const app = express();
+  app.disable('x-powered-by');
+  app.use((req, res, next) => {
+    res.set({
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'no-referrer',
+      'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https://cdn.discordapp.com https://media.discordapp.net https://i.scdn.co; font-src 'self'; connect-src 'self' https://api.lanyard.rest; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+    });
+    next();
+  });
+  app.get('/healthz', (req, res) => res.json({ ok: true }));
+  app.get('/api/discord', async (req, res) => {
+    const result = await presence();
+    res.set('Cache-Control', 'no-store').status(result.status).json(result.body);
+  });
+  // Explicit public routes: never expose server code, config, .env, tests or dependencies.
+  for (const dir of ['styles', 'assets', 'шрифты']) {
+    app.use(encodeURI(`/${dir}`), express.static(path.join(root, dir), { dotfiles: 'deny', index: false }));
+  }
+  app.get(['/', '/index.html'], (req, res) => res.sendFile(path.join(root, 'index.html')));
+  app.get('/app.js', (req, res) => res.sendFile(path.join(root, 'app.js')));
+  app.use((req, res) => res.status(404).type('text').send('Not found'));
+  return app;
 }
 
-app.get("/api/discord", async (req, res) => {
-  const id = await getDiscordId();
-  if (!id) return res.status(500).json({ error: "DISCORD_ID not configured" });
-
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   try {
-    const r = await fetch(`https://lanyard.rest/v1/users/${id}`, {
-      headers: { accept: "application/json" }
-    });
-
-    if (!r.ok) {
-      const text = await r.text();
-      return res.status(r.status).json({
-        error: "Lanyard error",
-        status: r.status,
-        body: text.slice(0, 500)
-      });
-    }
-
-    const j = await r.json();
-    return res.json({ success: true, data: j.data });
-  } catch (e) {
-    return res.status(500).json({ error: "Fetch failed", message: String(e) });
-  }
-});
-
-app.listen(PORT, () => {
-  console.log(`Server running: http://localhost:${PORT}`);
-});
+    const discordId = await readDiscordId();
+    const port = Number(process.env.PORT || 3000);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT must be 1–65535');
+    const host = process.env.HOST || '127.0.0.1';
+    const server = createApp({ discordId }).listen(port, host, () => console.log(`Portfolio: http://${host}:${port}`));
+    server.on('error', error => { console.error(error.message); process.exitCode = 1; });
+    for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => server.close());
+  } catch (error) { console.error(error.message); process.exitCode = 1; }
+}
